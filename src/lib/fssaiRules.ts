@@ -13,6 +13,25 @@ export interface FssaiRule {
 const has = (lower: string, ...patterns: string[]) =>
   patterns.some((p) => lower.includes(p));
 
+const looksLikeFoodName = (text: string, lower: string) => {
+  if (has(lower, "name of food", "name of the food", "product name", "food name")) {
+    return true;
+  }
+
+  const labelWords = /^(ingredients?|nutrition(al)?|directions?|storage|manufactured?|packed?|marketed?|mrp|fssai|net quantity|net weight|best before|expiry|batch|contains|customer care| veg(etarian)?|non[- ]?veg(etarian)?)\b/i;
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.replace(/[^\p{L}\p{N}%./&()' -]/gu, " ").replace(/\s+/g, " ").trim())
+    .filter((line) => line.length >= 3 && /\p{L}/u.test(line));
+
+  // The first meaningful line is commonly the product title on packaged-food labels.
+  return lines.slice(0, 5).some((line) => {
+    const normalized = line.toLowerCase();
+    if (labelWords.test(line) || normalized.split(/\s+/).length > 12) return false;
+    return /\p{L}{2,}/u.test(line);
+  });
+};
+
 /** Extract a context window around a keyword for evidence */
 export function extractEvidence(text: string, pattern: RegExp, windowChars = 80): string {
   const match = text.match(pattern);
@@ -28,13 +47,7 @@ export const FSSAI_RULES: FssaiRule[] = [
     name: "Name of the Food",
     description: "The product must declare a clear name of the food on the label.",
     hint: "Looks for a product name heading or 'name of food' label.",
-    check: (_text, lower) =>
-      has(lower, "name of food", "product name", "product", "name of the food") ||
-      // Heuristic: labels almost always have a brand/product line near top
-      has(lower, "brand", "mfg", "manufactured by") &&
-        has(lower, "ingredients")
-        ? "present"
-        : has(lower, "name of food", "product name", "name of the food") ? "present" : "missing",
+    check: (text, lower) => looksLikeFoodName(text, lower) ? "present" : "missing",
   },
   {
     id: 2,
@@ -42,7 +55,7 @@ export const FSSAI_RULES: FssaiRule[] = [
     description: "A complete list of ingredients must be declared in descending order of weight.",
     hint: "Searches for 'ingredients' heading followed by item list.",
     check: (_text, lower) =>
-      has(lower, "ingredients", "ingredient", "composition") ? "present" : "missing",
+      has(lower, "ingredients", "ingredient", "ingredlents", "ingrediants", "composition") ? "present" : "missing",
   },
   {
     id: 3,
@@ -91,10 +104,10 @@ export const FSSAI_RULES: FssaiRule[] = [
     description: "Customer care contact details (email/phone) must be provided.",
     hint: "Searches for 'customer care', email patterns, or phone numbers.",
     check: (text, lower) => {
-      if (has(lower, "customer care", "customer support", "consumer care", "consumer support", "contact us", "contact:", "helpline", "toll free", "toll-free")) return "present";
+      if (has(lower, "customer care", "customer support", "consumer care", "consumer support", "contact us", "contact:", "helpline", "toll free", "toll-free", "care:", "care @")) return "present";
       const email = text.match(/[\w.+-]+@[\w-]+\.[\w.-]+/i);
       if (email) return "present";
-      const phone = text.match(/\+?\d[\d\s-]{8,}/);
+      const phone = text.match(/(?:\+?\d[\d\s().-]{8,}\d)/);
       if (phone && phone[0].replace(/\D/g, "").length >= 10) return "present";
       return "missing";
     },
@@ -105,8 +118,8 @@ export const FSSAI_RULES: FssaiRule[] = [
     description: "Net quantity by weight, volume, or number must be declared.",
     hint: "Searches for 'net weight', 'net quantity', 'net content', or units like g/kg/ml/l.",
     check: (_text, lower) =>
-      has(lower, "net quantity", "net weight", "net content", "net vol", "net volume") ||
-      /\b\d+(\.\d+)?\s?(g|gm|gms|kg|ml|l|ltr|litre|liter|mg)\b/i.test(_text)
+      has(lower, "net quantity", "net weight", "net content", "net vol", "net volume", "net wt", "net qty", "quantity", "contents") ||
+      /\b\d+(\.\d+)?\s?(g|gm|gms|kg|ml|l|ltr|litre|liter|mg|oz|lb|pcs|pieces|count)\b/i.test(_text)
         ? "present"
         : "missing",
   },
@@ -149,8 +162,9 @@ export const FSSAI_RULES: FssaiRule[] = [
     name: "Date of Manufacture or Packing",
     description: "The date of manufacture or packing must be declared (Mfg/Pkd date).",
     hint: "Searches for 'mfg date', 'manufacture date', 'pkd', 'packing date', 'date of packing'.",
-    check: (_text, lower) =>
-      has(lower, "mfg date", "manufacture date", "manufactured on", "pkd", "pkd date", "packing date", "date of packing", "date of manufacture", "mfd", "mfd on", "mfg on", "packed on")
+    check: (text, lower) =>
+      has(lower, "mfg date", "manufacture date", "manufactured on", "pkd", "pkd date", "packing date", "date of packing", "date of manufacture", "mfd", "mfd on", "mfg", "mfg on", "packed on") ||
+      /\b(?:mfg|mfd|pkd|packed)\s*[:.-]?\s*\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4}\b/i.test(text)
         ? "present"
         : "missing",
   },
@@ -182,8 +196,9 @@ export const FSSAI_RULES: FssaiRule[] = [
     name: "Expiry / Best Before Date",
     description: "Expiry date or 'best before' date must be printed.",
     hint: "Searches for 'expiry', 'best before', 'use by', 'exp date'.",
-    check: (_text, lower) =>
-      has(lower, "expiry", "expire", "exp date", "exp:", "best before", "use by", "best if used by", "expiration", "exp. date", "expiry date")
+    check: (text, lower) =>
+      has(lower, "expiry", "expire", "exp date", "exp:", "best before", "use by", "best if used by", "expiration", "exp. date", "expiry date") ||
+      /\b(?:exp|expiry|use\s*by|best\s*before)\s*[:.-]?\s*\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4}\b/i.test(text)
         ? "present"
         : "missing",
   },
